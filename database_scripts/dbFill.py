@@ -119,8 +119,9 @@ def main(argv):
         conn.request("POST", "/api/tasks", params, headers)
         response = conn.getresponse()
         data = response.read()
+        print("TASK POST RAW RESPONSE:\n", data)
         d = json.loads(data)
-
+        print("PARSED JSON:", d)
         taskID = str(d['data']['_id'])
 
         # Make sure the task is added to the pending list of the user
