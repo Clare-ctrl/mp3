@@ -9,30 +9,45 @@ module.exports = function(router) {
         try {
             const { name, description, deadline, completed, assignedUser, assignedUserName } = req.body;
 
-            // Validation on name
+            // Validation: name and deadline are required
             if (!name || !deadline) {
-                return res.status(400).json({ message: "Name and deadline are required.", data: {} })
+                return res.status(400).json({ message: "Name and deadline are required.", data: {} });
             }
 
-            // const existing = await Task.findOne({ name: name, assignedUser: assignedUser });
-            // if (existing){
-            //     return res.status(400).json({ message: "The same task has been assigned to the same user.", data: {}});
-            // }
-
-            // Create a new task
-            const newTask = await Task.create(req.body);
-
-            // If the task is assigned to a user, update that user's pendingTasks
+            // Validate assigned user and username consistency if provided
+            let validUser = null;
             if (assignedUser) {
-                const user = await User.findById(assignedUser);
-                if (user && !user.pendingTasks.includes(newTask._id) && !newTask.completed) {
-                    user.pendingTasks.push(newTask._id);
-                    await user.save();
+                validUser = await User.findById(assignedUser);
+                if (!validUser) {
+                    return res.status(400).json({ message: "Invalid assignedUser ID.", data: {} });
+                }
+                if (assignedUserName && assignedUserName !== validUser.name) {
+                    return res.status(400).json({ message: "assignedUserName does not match assignedUser ID.", data: {} });
+                }
+            }
+
+            // Explicitly create a new Task object (no req.body)
+            const newTask = new Task({
+                name: name,
+                description: description || "",
+                deadline: deadline,
+                completed: completed || false,
+                assignedUser: assignedUser || null,
+                assignedUserName: assignedUserName || (validUser ? validUser.name : "unassigned"),
+            });
+
+            await newTask.save();
+
+            // If task assigned to a valid user and not completed, add to pendingTasks
+            if (validUser && !newTask.completed) {
+                if (!validUser.pendingTasks.includes(newTask._id)) {
+                    validUser.pendingTasks.push(newTask._id);
+                    await validUser.save();
                 }
             }
 
             return res.status(201).json({ message: "Task created", data: newTask });
-        } catch(error) {
+        } catch (error) {
             return res.status(500).json({ message: "Server error", data: error });
         }
     });
@@ -119,38 +134,89 @@ module.exports = function(router) {
         }
     });
 
-    // Update 
     tasksIdRoute.put(async function (req, res) {
         try {
             const { id } = req.params;
-            const { name, description, deadline, completed, assignedUser, assignedUserName } = req.body;
-
-            if (!name || !deadline) {
-                return res.status(400).json({ message: "Task name and deadline are required.", data: {} })
-            }
+            let {
+                name,
+                description,
+                deadline,
+                completed,
+                assignedUser,
+                assignedUserName
+            } = req.body;
 
             const oldTask = await Task.findById(id);
-            if(!oldTask) {
+            if (!oldTask) {
                 return res.status(404).json({ message: "Task not found", data: {} });
             }
-            //If the assignedUser changes, update both sides
+
+            // Validation: at least name or deadline must be present
+            if (!name && !deadline && !description && typeof completed === "undefined" && !assignedUser) {
+                return res.status(400).json({ message: "At least one field (name, deadline, etc.) is required to update.", data: {} });
+            }
+
+            // Fill missing fields with old values to prevent overwriting with undefined/null
+            if (typeof name === "undefined") name = oldTask.name;
+            if (typeof description === "undefined") description = oldTask.description;
+            if (typeof deadline === "undefined") deadline = oldTask.deadline;
+            if (typeof completed === "undefined") completed = oldTask.completed;
+
+            // Validate assignedUser and assignedUserName consistency
+            if (assignedUser) {
+                const user = await User.findById(assignedUser);
+                if (!user) {
+                    return res.status(400).json({ message: "Invalid assignedUser ID.", data: {} });
+                }
+                // Auto-fill assignedUserName if not provided
+                if (!assignedUserName) {
+                    assignedUserName = user.name;
+                } else if (assignedUserName !== user.name) {
+                    return res.status(400).json({ message: "assignedUserName does not match assignedUser ID.", data: {} });
+                }
+            }
+
+            // Remove from old user's pendingTasks if assignedUser changed
             if (oldTask.assignedUser && oldTask.assignedUser.toString() !== assignedUser) {
                 const oldUser = await User.findById(oldTask.assignedUser);
-                
-                //Only assign not complete task to pendingTask
-                if (oldUser && oldTask.completed == false) {
-                    oldUser.pendingTasks = oldUser.pendingTasks.filter (
+                if (oldUser && oldTask.completed === false) {
+                    oldUser.pendingTasks = oldUser.pendingTasks.filter(
                         (t) => t.toString() !== id
                     );
                     await oldUser.save();
                 }
             }
 
-            const updatedTask = await Task.findByIdAndUpdate(id, req.body, { new: true, runValidators: true});
-            // Add this task to the new user's pendingTasks
+            // Remove from pendingTasks if task is now completed
+            if (completed === true && oldTask.completed === false && oldTask.assignedUser) {
+                const user = await User.findById(oldTask.assignedUser);
+                if (user) {
+                    user.pendingTasks = user.pendingTasks.filter(
+                        (t) => t.toString() !== id
+                    );
+                    await user.save();
+                }
+            }
+
+            const updatedFields = {
+                name,
+                description,
+                deadline,
+                completed,
+                assignedUser,
+                assignedUserName,
+            };
+
+            const updatedTask = await Task.findByIdAndUpdate(
+                id,
+                updatedFields,
+                { new: true, runValidators: true }
+            );
+
+            // Add to new user's pendingTasks if needed
             if (assignedUser) {
                 const newUser = await User.findById(assignedUser);
-                if (newUser && !newUser.pendingTasks.includes(updatedTask._id) && !updatedTask.completed){
+                if (newUser && !newUser.pendingTasks.includes(updatedTask._id) && !updatedTask.completed) {
                     newUser.pendingTasks.push(updatedTask._id);
                     await newUser.save();
                 }
@@ -181,7 +247,7 @@ module.exports = function(router) {
                 }
             }
 
-            return res.status(204).json({ message: "Task deleted", data: {} });
+            return res.status(200).json({ message: "Task deleted", data: {} });
         } catch (error) {
             return res.status(500).json({ message: "Server error", data:error });
         }

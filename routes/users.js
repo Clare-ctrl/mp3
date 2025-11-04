@@ -22,7 +22,12 @@ module.exports = function(router) {
             }
 
             // Create a new user
-            const newUser = await User.create(req.body);
+            const newUser = new User({
+                name,
+                email,
+                pendingTasks: []   // optional, since default is []
+                });
+            await newUser.save();
             return res.status(201).json({ message: "User created", data: newUser });
         } catch (error) {
             return res.status(500).json({ message: "Server error", data: error });
@@ -125,7 +130,19 @@ module.exports = function(router) {
                 return res.status(400).json({ message: "Name and email are required.", data: {} })
             }
 
-            const updatedUser = await User.findByIdAndUpdate(id, req.body, { new: true, runValidators: true});
+            // Validate all pendingTasks IDs before updating
+            if (pendingTasks && pendingTasks.length > 0) {
+                const validTasks = await Task.find({ _id: { $in: pendingTasks } });
+                if (validTasks.length !== pendingTasks.length) {
+                    return res.status(400).json({
+                        message: "One or more pendingTasks IDs are invalid.",
+                        data: {},
+                    });
+                }
+            }
+
+            const updatedFields = { name, email, pendingTasks };
+            const updatedUser = await User.findByIdAndUpdate(id, updatedFields, { new: true, runValidators: true });
 
             if (!updatedUser)
                 return res.status(404).json({ message: "User not found", data: {} });
@@ -147,10 +164,10 @@ module.exports = function(router) {
             // Update all tasks assigned to this user
             await Task.updateMany(
             { assignedUser: deletedUser._id },
-            { $set: { assignedUser: null, assignedUsername: null } }
-            );
+            { $set: { assignedUser: null, assignedUserName: null } } 
+        );
 
-            return res.status(200).json({ message: "User deleted and tasks unassigned", data: {} });
+        return res.status(200).json({ message: "User deleted", data: {} });
         } catch (error) {
             return res.status(500).json({ message: "Server error", data:error });
         }
